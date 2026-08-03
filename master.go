@@ -1,6 +1,7 @@
 package dfs
 
 import (
+	"net"
 	"time"
 
 	"github.com/23jdd/SamKv/pkg/store"
@@ -12,8 +13,7 @@ type Master struct {
 	chunkIndex     map[ChunkHandle]*ChunkMeta // Chunk ID -> 元数据
 	chunkLocations map[ChunkHandle][]string   // Chunk ID -> ChunkServer 地址（内存重建）
 	leases         map[ChunkHandle]*Lease     // 租约信息
-	kvStore        *store.StoreManager        // 复用 SamKv 持久化
-	rpcServer      *mrpc.Server               // 复用 mrpc
+	kvStore        *store.StoreManager        // SamKv 持久化
 }
 type FileMeta struct {
 	Path      string
@@ -31,4 +31,31 @@ type Lease struct {
 	Primary     string
 	ExpireAt    time.Time
 	Secondaries []string
+}
+
+func NewMaster(dir string, opt store.Options) (*Master, error) {
+	st, err := store.NewStoreMangerWithOptions(dir, opt)
+	if err != nil {
+		return nil, err
+	}
+	ms := &Master{}
+	ms.kvStore = st
+	ms.leases = make(map[ChunkHandle]*Lease)
+	ms.chunkIndex = make(map[ChunkHandle]*ChunkMeta)
+	ms.chunkLocations = make(map[ChunkHandle][]string)
+	ms.namespace = make(map[string]*FileMeta)
+	return ms, nil
+}
+
+func (ms *Master) Run(host string) {
+	lis, err := net.Listen("tcp", host)
+	if err != nil {
+		panic(err)
+	}
+	sv := mrpc.NewServer(lis)
+	err = sv.Register(MasterSerivceName, ms)
+	if err != nil {
+		panic(err)
+	}
+	sv.Run()
 }
