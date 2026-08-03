@@ -42,12 +42,22 @@ func (pl *pathLocker) lock(writes, reads []string) func() {
 	}
 	sort.Strings(paths)
 
+	// 在 pl.mu 保护下取得每个路径的锁对象(引用计数 +1 后锁对象不会被回收),
+	// 之后通过捕获的指针加锁,不再访问 map,避免与并发释放产生数据竞争。
+	type heldLock struct {
+		p  string
+		lk *sync.RWMutex
+	}
 	pl.mu.Lock()
+	locks := make([]heldLock, 0, len(paths))
 	for _, p := range paths {
-		if pl.locks[p] == nil {
-			pl.locks[p] = &sync.RWMutex{}
+		lk := pl.locks[p]
+		if lk == nil {
+			lk = &sync.RWMutex{}
+			pl.locks[p] = lk
 		}
 		pl.refs[p]++
+		locks = append(locks, heldLock{p: p, lk: lk})
 	}
 	pl.mu.Unlock()
 
@@ -60,29 +70,29 @@ func (pl *pathLocker) lock(writes, reads []string) func() {
 		return false
 	}
 
-	held := make([]string, 0, len(paths))
-	for _, p := range paths {
-		if isWrite(p) {
-			pl.locks[p].Lock()
+	held := make([]heldLock, 0, len(locks))
+	for _, l := range locks {
+		if isWrite(l.p) {
+			l.lk.Lock()
 		} else {
-			pl.locks[p].RLock()
+			l.lk.RLock()
 		}
-		held = append(held, p)
+		held = append(held, l)
 	}
 
 	return func() {
 		for i := len(held) - 1; i >= 0; i-- {
-			p := held[i]
-			if isWrite(p) {
-				pl.locks[p].Unlock()
+			l := held[i]
+			if isWrite(l.p) {
+				l.lk.Unlock()
 			} else {
-				pl.locks[p].RUnlock()
+				l.lk.RUnlock()
 			}
 			pl.mu.Lock()
-			pl.refs[p]--
-			if pl.refs[p] == 0 {
-				delete(pl.locks, p)
-				delete(pl.refs, p)
+			pl.refs[l.p]--
+			if pl.refs[l.p] == 0 {
+				delete(pl.locks, l.p)
+				delete(pl.refs, l.p)
 			}
 			pl.mu.Unlock()
 		}

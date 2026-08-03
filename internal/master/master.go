@@ -47,8 +47,8 @@ type Master struct {
 
 	// ---- 生命周期 ----
 	dir       string
-	opFile    *file     // 操作日志文件
-	opCount   int       // 自上次 checkpoint 以来的操作数
+	opFile    *file // 操作日志文件
+	opCount   int   // 自上次 checkpoint 以来的操作数
 	rpcServer *rpc.Server
 	stopCh    chan struct{}
 	wg        sync.WaitGroup

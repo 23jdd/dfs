@@ -36,8 +36,8 @@ type GFSClient struct {
 	locationCache map[types.ChunkHandle]*CachedLocation
 	cacheMu       sync.RWMutex
 
-	dataID     uint64
-	dataIDMu   sync.Mutex
+	dataID   uint64
+	dataIDMu sync.Mutex
 }
 
 // CachedLocation 是客户端缓存的 chunk 位置信息。

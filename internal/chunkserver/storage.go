@@ -270,17 +270,16 @@ func (cs *ChunkServer) createChunkFile(h types.ChunkHandle, version types.ChunkV
 			return err
 		}
 	}
-	// 采纳最高版本
+	// 采纳最高版本(versions 由 cs.mu 保护)
+	cs.mu.Lock()
 	if version > cs.versions[h] {
 		cs.versions[h] = version
 	}
-	ck := cs.loadChecksums(h)
-	ck.Version = cs.versions[h]
-	if err := cs.saveChecksums(h, ck); err != nil {
-		return err
-	}
-	cs.mu.Lock()
 	cs.chunks[h] = path
 	cs.mu.Unlock()
-	return nil
+	ck := cs.loadChecksums(h)
+	cs.mu.Lock()
+	ck.Version = cs.versions[h]
+	cs.mu.Unlock()
+	return cs.saveChecksums(h, ck)
 }

@@ -195,11 +195,11 @@ func TestBasicReadWrite(t *testing.T) {
 // ---- 测试场景 2:并发原子追加(10 goroutine,记录完整且不重叠) ----
 
 const (
-	appendPayloadSize   = 2048
-	appendHeaderSize    = 16
-	appendRecordSize    = appendHeaderSize + appendPayloadSize
-	appendGoroutines    = 10
-	appendPerGoroutine  = 30
+	appendPayloadSize  = 2048
+	appendHeaderSize   = 16
+	appendRecordSize   = appendHeaderSize + appendPayloadSize
+	appendGoroutines   = 10
+	appendPerGoroutine = 30
 )
 
 // appendRecord 构造一条可校验的记录:magic + goroutineID + seq + 负载 CRC32。
