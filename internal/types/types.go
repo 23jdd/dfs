@@ -62,6 +62,39 @@ var (
 	ErrReadOnly        = errors.New("file is read-only snapshot reference")
 )
 
+// errorByMessage 是错误消息到哨兵错误的映射。
+// mrpc 通过字符串传输错误,收到的一方无法直接用 errors.Is 匹配原哨兵,
+// 需要借助 MatchError 还原。
+var errorByMessage = func() map[string]error {
+	m := map[string]error{
+		ErrFileExists.Error():      ErrFileExists,
+		ErrFileNotFound.Error():    ErrFileNotFound,
+		ErrChunkNotFound.Error():   ErrChunkNotFound,
+		ErrIndexOutOfRange.Error(): ErrIndexOutOfRange,
+		ErrChunkFull.Error():       ErrChunkFull,
+		ErrStaleVersion.Error():    ErrStaleVersion,
+		ErrDataNotFound.Error():    ErrDataNotFound,
+		ErrChecksum.Error():        ErrChecksum,
+		ErrNoServer.Error():        ErrNoServer,
+		ErrInvalidPath.Error():     ErrInvalidPath,
+		ErrReadOnly.Error():        ErrReadOnly,
+	}
+	return m
+}()
+
+// MatchError 将 RPC 传回的字符串错误还原为哨兵错误,
+// 使 errors.Is(err, ErrChunkFull) 之类的判断在跨进程后依然成立;
+// 未知错误原样返回。
+func MatchError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if sentinel, ok := errorByMessage[err.Error()]; ok {
+		return sentinel
+	}
+	return err
+}
+
 // FileMetadata 是命名空间中一个文件的元数据。
 type FileMetadata struct {
 	Path   string
@@ -318,11 +351,14 @@ type ReadReply struct {
 	Data []byte
 }
 
-// CopyArgs 从 SourceServer 复制整个 chunk 到本服务器。
+// CopyArgs 从源服务器复制一个 chunk 到本服务器。
+// SourceHandle 是源服务器上需要读取的 chunk(写时复制时源为旧 handle,
+// 目标为新 handle;副本再复制时二者相同)。
 type CopyArgs struct {
 	Handle       ChunkHandle
 	Version      ChunkVersion
 	SourceServer string
+	SourceHandle ChunkHandle
 }
 
 type CopyReply struct{}

@@ -15,7 +15,6 @@ import (
 	"net"
 	"strconv"
 	"sync"
-	"time"
 
 	"github.com/23jdd/mrpc"
 )
@@ -104,12 +103,54 @@ type Server struct {
 }
 
 // Listen 在 addr 上创建 TCP 监听。
+// 监听器会跟踪所有已建立的连接,Close 时一并关闭,
+// 保证服务停止后残留连接不再被处理(避免"旧 Master 幽灵连接"问题)。
 func Listen(addr string) (*Server, error) {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
-	return &Server{lis: lis, raw: mrpc.NewServer(lis)}, nil
+	tl := &trackListener{Listener: lis, conns: make(map[net.Conn]bool)}
+	return &Server{lis: tl, raw: mrpc.NewServer(tl)}, nil
+}
+
+// trackListener 跟踪已接受的连接,Close 时全部关闭。
+type trackListener struct {
+	net.Listener
+	mu    sync.Mutex
+	conns map[net.Conn]bool
+}
+
+func (t *trackListener) Accept() (net.Conn, error) {
+	c, err := t.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	t.mu.Lock()
+	t.conns[c] = true
+	t.mu.Unlock()
+	return &trackConn{Conn: c, t: t}, nil
+}
+
+func (t *trackListener) closeAll() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for c := range t.conns {
+		_ = c.Close()
+	}
+	t.conns = make(map[net.Conn]bool)
+}
+
+type trackConn struct {
+	net.Conn
+	t *trackListener
+}
+
+func (c *trackConn) Close() error {
+	c.t.mu.Lock()
+	delete(c.t.conns, c.Conn)
+	c.t.mu.Unlock()
+	return c.Conn.Close()
 }
 
 // Addr 返回实际监听地址(addr 为 ":0" 时可取到真实端口)。
@@ -128,29 +169,10 @@ func (s *Server) Serve() error {
 	return nil
 }
 
-// Close 关闭监听器,使 Serve 返回。
+// Close 关闭监听器及全部已建立连接,使 Serve 返回。
 func (s *Server) Close() error {
-	return s.lis.Close()
-}
-
-// DialTimeout 带超时的拨号尝试,用于避免连接不可达时长时间阻塞。
-func DialTimeout(addr string, timeout time.Duration) (*Client, error) {
-	done := make(chan *Client, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		c, err := Dial(addr)
-		if err != nil {
-			errCh <- err
-			return
-		}
-		done <- c
-	}()
-	select {
-	case c := <-done:
-		return c, nil
-	case err := <-errCh:
-		return nil, err
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("rpc: dial %s timeout", addr)
+	if tl, ok := s.lis.(*trackListener); ok {
+		tl.closeAll()
 	}
+	return s.lis.Close()
 }
