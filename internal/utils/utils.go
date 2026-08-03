@@ -87,12 +87,14 @@ func HiddenPathFor(p string) string {
 	return types.DeletedPrefix + fmt.Sprintf("%d_%s", time.Now().UnixNano(), name)
 }
 
-// MinI64 返回两个 int64 的较小值。
-func MinI64(a, b int64) int64 {
-	if a < b {
-		return a
+// MinI64 返回若干 int64 中的最小值。
+func MinI64(a int64, rest ...int64) int64 {
+	for _, b := range rest {
+		if b < a {
+			a = b
+		}
 	}
-	return b
+	return a
 }
 
 // MaxI64 返回两个 int64 的较大值。
