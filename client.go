@@ -13,3 +13,6 @@ func NewClient(address string, port int) *Client {
 		c: mrpc.NewClient(address, port),
 	}
 }
+func (cli*Client)Read(filename string,offset int,length int){
+	 
+}

@@ -5,7 +5,13 @@ const (
 	ChunkServiceName  = "Chunk"
 )
 const (
-	CreateFile  = "CreateFile"
-	DeleteFile  = "DeletFile"
-	GetFileInfo = "GetFileInfo"
+	CreateFile    = "CreateFile"
+	DeleteFile    = "DeletFile"
+	GetFileInfo   = "GetFileInfo"
+	ReadLocations = "ReadLocations"
+	ReadChunk     = "ReadChunk"
+)
+const (
+	FilePrefix  = "file:"
+	ChunkPrefix = "chunk:"
 )

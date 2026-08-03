@@ -11,8 +11,9 @@ import (
 )
 
 var (
-	ErrFileExist    = errors.New("File Is Exist")
-	ErrNotFoundFile = errors.New("Not Found File")
+	ErrFileExist     = errors.New("File Is Exist")
+	ErrNotFoundFile  = errors.New("Not Found File")
+	ErrIndexOutBound = errors.New("Index Out Bound")
 )
 
 type Master struct {
@@ -20,7 +21,8 @@ type Master struct {
 	chunkIndex     map[ChunkHandle]*ChunkMeta // Chunk ID -> 元数据
 	chunkLocations map[ChunkHandle][]string   // Chunk ID -> ChunkServer 地址（内存重建）
 	leases         map[ChunkHandle]*Lease     // 租约信息
-	kvStore        *buntdb.DB                 // SamKv 持久化
+	ChunkServers   []string
+	kvStore        *buntdb.DB // SamKv 持久化
 	codec          Codec
 	mu             sync.RWMutex
 }
@@ -35,6 +37,7 @@ type ChunkMeta struct {
 	Version     uint32    // 版本号，用于过期副本检测
 	Primary     string    // 当前 Primary ChunkServer 地址
 	LeaseExpire time.Time // 租约过期时间
+
 }
 type Lease struct {
 	Primary     string
@@ -42,7 +45,7 @@ type Lease struct {
 	Secondaries []string
 }
 
-func NewMaster(path string) (*Master, error) {
+func NewMaster(path string, chunks ...string) (*Master, error) {
 	st, err := buntdb.Open(path)
 	if err != nil {
 		return nil, err
@@ -58,6 +61,7 @@ func NewMaster(path string) (*Master, error) {
 	ms.chunkIndex = make(map[ChunkHandle]*ChunkMeta)
 	ms.chunkLocations = make(map[ChunkHandle][]string)
 	ms.codec = NewJsonCodec()
+	ms.ChunkServers = chunks
 	return ms, nil
 }
 func (ms *Master) ReLoad() error {
@@ -97,7 +101,7 @@ func (ms *Master) CreateFile(req CreateFileRequest, rep *CreateFileReply) error 
 			}
 			ms.mu.Lock()
 			defer ms.mu.Unlock()
-			ms.namespace[req.Path]=fm
+			ms.namespace[req.Path] = fm
 			return nil
 		}
 		return err
@@ -127,6 +131,21 @@ func (ms *Master) GetFileInfo(req GetFileInfoRequest, rep *GetFileInfoReply) err
 	rep.Info = *val
 	return nil
 }
+func (ms *Master) ReadLocations(req ReadLocationsRequest, rep *ReadLocationsReply) error {
+	meta, ok := ms.namespace[req.FileName]
+	if !ok {
+		return ErrNotFoundFile
+	}
+	if len(meta.Chunks) < int(req.Index) {
+        return ErrIndexOutBound 
+	}
+	handler := meta.Chunks[req.Index]
+	rep.Handler=handler
+	rep.Replicas=ms.chunkLocations[handler]
+	cm := ms.chunkIndex[handler]
+	rep.Version=cm.Version
+	return nil
+}
 func (ms *Master) Run(host string) {
 	lis, err := net.Listen("tcp", host)
 	if err != nil {
@@ -138,4 +157,9 @@ func (ms *Master) Run(host string) {
 		panic(err)
 	}
 	sv.Run()
+}
+
+// Wait All ChunkServer report chunks
+func (ms *Master) Wait() {
+
 }
