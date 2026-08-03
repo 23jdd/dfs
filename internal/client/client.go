@@ -188,6 +188,11 @@ func (c *GFSClient) Stat(path string) (size int64, chunks int, err error) {
 	return reply.Size, reply.ChunkCount, nil
 }
 
+// ChunkHandle 返回文件指定 chunk 索引的 handle(诊断/测试辅助)。
+func (c *GFSClient) ChunkHandle(path string, index int) (types.ChunkHandle, error) {
+	return c.getChunkHandle(path, index)
+}
+
 // Open 打开文件(校验存在性),返回文件句柄。
 func (c *GFSClient) Open(path string) (*File, error) {
 	if _, _, err := c.Stat(path); err != nil {

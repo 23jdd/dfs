@@ -156,6 +156,31 @@ func (m *Master) ReplicaCount(h types.ChunkHandle) int {
 	return len(m.liveLocations(h))
 }
 
+// PrimaryOf 返回指定 chunk 当前的主副本地址(诊断/测试辅助):
+// 优先返回存活租约的主副本,否则返回任一存活副本。
+func (m *Master) PrimaryOf(h types.ChunkHandle) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if lease := m.leases[h]; lease != nil && m.isPrimaryAlive(lease.Primary) {
+		return lease.Primary
+	}
+	live := m.liveLocations(h)
+	if len(live) == 0 {
+		return ""
+	}
+	return live[0]
+}
+
+// ChunkVersion 返回指定 chunk 的版本号(诊断/测试辅助)。
+func (m *Master) ChunkVersion(h types.ChunkHandle) types.ChunkVersion {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if cm := m.chunkMeta[h]; cm != nil {
+		return cm.Version
+	}
+	return 0
+}
+
 // ChunkReplicaStats 返回所有被引用 chunk 的副本数统计。
 func (m *Master) ChunkReplicaStats() map[types.ChunkHandle]int {
 	m.mu.RLock()

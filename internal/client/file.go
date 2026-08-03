@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"gfs/internal/types"
 	"gfs/internal/utils"
@@ -151,27 +152,37 @@ func (f *File) WriteAt(p []byte, off int64) (int, error) {
 	return int(written), nil
 }
 
-// writeBlock 完成单个数据块的推送与写入,含一次失败重试。
+// writeRetryInterval 与 writeRetryAttempts 控制写入失败后的重试节奏。
+// 主副本故障时,Master 需要等待租约过期才能选出新主,重试窗口须覆盖该时段。
+const (
+	writeRetryInterval = 250 * time.Millisecond
+	writeRetryAttempts = 10 // 10 x 250ms = 2.5s,覆盖默认测试租约(2s)
+)
+
+// writeBlock 完成单个数据块的推送与写入,失败时按退避重试。
+// 每次重试都重新查询 Master(写模式不做缓存),保证主副本切换后立即生效。
 // 注意:COW 后必须使用 GetLocations 返回的新 handle 进行推送与写入。
 func (f *File) writeBlock(handle types.ChunkHandle, block []byte, chunkOff int64, index int) error {
-	dataID := f.c.nextDataID()
-	// 阶段一:推送数据(写位置永远实时查询 Master,不做缓存)
-	loc, err := f.c.queryLocations(f.path, handle, index, true)
-	if err != nil {
-		return err
+	var lastErr error
+	for attempt := 0; attempt < writeRetryAttempts; attempt++ {
+		dataID := f.c.nextDataID()
+		// 阶段一:推送数据(写位置永远实时查询 Master,不做缓存)
+		loc, err := f.c.queryLocations(f.path, handle, index, true)
+		if err != nil {
+			lastErr = err
+			time.Sleep(writeRetryInterval)
+			continue
+		}
+		err = f.pushAndWrite(loc, loc.Handle, dataID, block, chunkOff)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		// 阶段二失败:使缓存失效,下一轮重新查询
+		f.c.invalidateLocation(loc.Handle)
+		time.Sleep(writeRetryInterval)
 	}
-	err = f.pushAndWrite(loc, loc.Handle, dataID, block, chunkOff)
-	if err == nil {
-		return nil
-	}
-	// 阶段二失败:使缓存失效,重新查询并重试一次
-	f.c.invalidateLocation(loc.Handle)
-	loc2, qerr := f.c.queryLocations(f.path, handle, index, true)
-	if qerr != nil {
-		return qerr
-	}
-	dataID2 := f.c.nextDataID()
-	return f.pushAndWrite(loc2, loc2.Handle, dataID2, block, chunkOff)
+	return fmt.Errorf("client: write retries exhausted (handle=%d): %w", handle, lastErr)
 }
 
 // pushAndWrite 执行一次两阶段写入:推送数据到主副本,再发控制请求。
@@ -200,6 +211,22 @@ func (f *File) pushAndWrite(loc *CachedLocation, handle types.ChunkHandle, dataI
 // Append 原子追加一条记录,返回记录实际写入的偏移。
 // 主副本为该记录选择偏移,保证所有副本在相同偏移写入相同数据;
 // 若当前最后一个 chunk 已满,则分配新 chunk 后重试。
+// appendRetryInterval 返回追加重试间隔:取租约时长的 1/4(上下限 100ms~1s)。
+// 主副本故障时,需等待租约过期 Master 才能选出新主,重试间隔须覆盖该窗口。
+func (f *File) appendRetryInterval() time.Duration {
+	d := f.c.cfg.LeaseTimeout / 4
+	if d > time.Second {
+		d = time.Second
+	}
+	if d < 100*time.Millisecond {
+		d = 100 * time.Millisecond
+	}
+	return d
+}
+
+// appendAttempts 追加最大尝试次数(8 x 500ms = 4s,覆盖测试租约 2s)。
+const appendAttempts = 8
+
 func (f *File) Append(p []byte) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -212,7 +239,7 @@ func (f *File) Append(p []byte) (int64, error) {
 		return 0, errors.New("client: append record larger than chunk size")
 	}
 	var lastErr error
-	for attempt := 0; attempt < 4; attempt++ {
+	for attempt := 0; attempt < appendAttempts; attempt++ {
 		size, chunkCount, err := f.c.Stat(f.path)
 		if err != nil {
 			return 0, err
@@ -244,6 +271,7 @@ func (f *File) Append(p []byte) (int64, error) {
 		if err != nil {
 			f.c.invalidateLocation(loc.Handle)
 			lastErr = err
+			time.Sleep(f.appendRetryInterval())
 			continue
 		}
 		var wr types.WriteReply
@@ -256,7 +284,7 @@ func (f *File) Append(p []byte) (int64, error) {
 		}, &wr)
 		if err != nil {
 			if errors.Is(err, types.ErrChunkFull) {
-				// 最后一个 chunk 已满:分配新 chunk 后重试
+				// 最后一个 chunk 已满:分配新 chunk 后立即重试
 				var ac types.ACReply
 				if aerr := f.c.callMaster("AllocateChunk", &types.ACArgs{Path: f.path, ChunkIndex: chunkCount}, &ac); aerr != nil {
 					return 0, aerr
@@ -265,6 +293,7 @@ func (f *File) Append(p []byte) (int64, error) {
 			}
 			f.c.invalidateLocation(loc.Handle)
 			lastErr = err
+			time.Sleep(f.appendRetryInterval())
 			continue
 		}
 		// 上报文件大小:追加永远扩展文件,新大小 = 追加前大小 + 记录长度。
