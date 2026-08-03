@@ -369,6 +369,10 @@ type ApplyArgs struct {
 	DataID  uint64
 	Offset  int64
 	Version ChunkVersion
+	// PadTo > 0 时表示无需应用缓冲数据,仅把 chunk 文件扩展到 PadTo 字节
+	// (零填充)。用于原子追加放不下时补齐旧 chunk,保持"前面 chunk 全满"的
+	// 对齐不变量,使文件偏移到 chunk 索引的映射始终成立。
+	PadTo int64
 }
 
 type ApplyReply struct{}

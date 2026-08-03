@@ -59,6 +59,15 @@ func (cs *ChunkServer) WriteChunk(args *types.WriteArgs, reply *types.WriteReply
 		// 原子追加:偏移 = chunk 当前长度
 		offset = cs.chunkLength(args.Handle)
 		if offset+int64(len(data)) > cs.cfg.ChunkSize {
+			// 记录放不下:把剩余空间零填充(所有副本一致),保持
+			// "非末尾 chunk 均为整块"的对齐不变量,然后返回 ErrChunkFull,
+			// 客户端会分配新 chunk 重试。
+			cs.padChunk(args.Handle, cs.cfg.ChunkSize)
+			for _, s := range args.Secondaries {
+				_ = cs.peerCall(s, rpc.ServiceMethod(types.ChunkServerService, "ApplyMutation"),
+					&types.ApplyArgs{Handle: args.Handle, Version: args.Version, PadTo: cs.cfg.ChunkSize},
+					&types.ApplyReply{})
+			}
 			return types.ErrChunkFull
 		}
 	} else if offset < 0 || offset+int64(len(data)) > cs.cfg.ChunkSize {
@@ -86,7 +95,7 @@ func (cs *ChunkServer) WriteChunk(args *types.WriteArgs, reply *types.WriteReply
 	return firstErr
 }
 
-// ApplyMutation 由主副本调用,让从副本应用缓冲中的数据。
+// ApplyMutation 由主副本调用,让从副本应用缓冲中的数据或执行零填充扩展。
 func (cs *ChunkServer) ApplyMutation(args *types.ApplyArgs, reply *types.ApplyReply) error {
 	lk := cs.chunkLockFor(args.Handle)
 	lk.Lock()
@@ -94,6 +103,10 @@ func (cs *ChunkServer) ApplyMutation(args *types.ApplyArgs, reply *types.ApplyRe
 
 	if err := cs.adoptVersion(args.Handle, args.Version); err != nil {
 		return err
+	}
+	if args.PadTo > 0 {
+		// 零填充扩展(原子追加放不下时的对齐补齐),无需缓冲数据
+		return cs.padChunk(args.Handle, args.PadTo)
 	}
 	data := cs.takeBuffer(args.DataID)
 	if data == nil {
@@ -103,6 +116,17 @@ func (cs *ChunkServer) ApplyMutation(args *types.ApplyArgs, reply *types.ApplyRe
 		return types.ErrChunkFull
 	}
 	return cs.applyData(args.Handle, data, args.Offset)
+}
+
+// padChunk 把 chunk 文件零填充扩展到指定长度(仅扩展,不截断)。
+// 调用方需持有该 chunk 的锁。
+func (cs *ChunkServer) padChunk(h types.ChunkHandle, to int64) error {
+	cur := cs.chunkLength(h)
+	if cur >= to {
+		return nil
+	}
+	zeros := make([]byte, to-cur)
+	return cs.applyData(h, zeros, cur)
 }
 
 // adoptVersion 版本校验/采纳:本地版本低于参数版本则采纳(主副本切换后由客户端

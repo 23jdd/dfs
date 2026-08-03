@@ -63,8 +63,10 @@ func (f *File) ReadAt(p []byte, off int64) (int, error) {
 		}
 		copy(p[read:read+int64(len(data))], data)
 		read += int64(len(data))
-		if len(data) == 0 {
-			break // 提前 EOF
+		if int64(len(data)) < n {
+			// 稀疏空洞或数据不足:剩余部分按零补齐,并推进游标
+			// (调用方缓冲区本就是零,这里只推进位置,继续读后续 chunk)
+			read += n - int64(len(data))
 		}
 	}
 	return int(read), nil
@@ -120,13 +122,13 @@ func (f *File) WriteAt(p []byte, off int64) (int, error) {
 		chunkOff := cur % chunkSize
 		n := utils.MinI64(int64(len(p))-written, chunkSize-chunkOff, blockSize)
 
-		// 确保 chunk 存在(按需分配)
-		if index >= chunkCount {
+		// 确保 chunk 存在:稀疏写入时按序补齐中间缺失的 chunk(空 chunk)
+		for index >= chunkCount {
 			var ac types.ACReply
-			if err := f.c.callMaster("AllocateChunk", &types.ACArgs{Path: f.path, ChunkIndex: index}, &ac); err != nil {
+			if err := f.c.callMaster("AllocateChunk", &types.ACArgs{Path: f.path, ChunkIndex: chunkCount}, &ac); err != nil {
 				return int(written), err
 			}
-			chunkCount = index + 1
+			chunkCount++
 		}
 
 		handle, err := f.c.getChunkHandle(f.path, index)
@@ -240,7 +242,7 @@ func (f *File) Append(p []byte) (int64, error) {
 	}
 	var lastErr error
 	for attempt := 0; attempt < appendAttempts; attempt++ {
-		size, chunkCount, err := f.c.Stat(f.path)
+		_, chunkCount, err := f.c.Stat(f.path)
 		if err != nil {
 			return 0, err
 		}
@@ -296,10 +298,12 @@ func (f *File) Append(p []byte) (int64, error) {
 			time.Sleep(f.appendRetryInterval())
 			continue
 		}
-		// 上报文件大小:追加永远扩展文件,新大小 = 追加前大小 + 记录长度。
-		// 注意不能用 wr.Offset(它是 chunk 内偏移,COW 后可能从 0 开始)。
+		// 上报文件大小:追加永远扩展文件。追加落在 chunk index 处,
+		// 由于对齐不变量(前面 chunk 均整块/零填充),文件末尾 =
+		// index*chunkSize + wr.Offset + 记录长度。
 		var us types.UpdateSizeReply
-		if err := f.c.callMaster("UpdateSize", &types.UpdateSizeArgs{Path: f.path, Size: size + int64(len(p))}, &us); err != nil {
+		newSize := int64(index)*f.c.cfg.ChunkSize + wr.Offset + int64(len(p))
+		if err := f.c.callMaster("UpdateSize", &types.UpdateSizeArgs{Path: f.path, Size: newSize}, &us); err != nil {
 			return wr.Offset, err
 		}
 		return wr.Offset, nil
