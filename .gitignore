@@ -1,3 +1,8 @@
-Task.md
-db
-cmd
+# 运行产物
+master_data/
+cs_data/
+*.log
+
+# 系统文件
+.DS_Store
+Thumbs.db
