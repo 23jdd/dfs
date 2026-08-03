@@ -3,15 +3,16 @@ package dfs
 import (
 	"errors"
 	"net"
+	"sync"
 	"time"
 
-	"github.com/23jdd/SamKv/pkg/store"
 	"github.com/23jdd/mrpc"
 	"github.com/tidwall/buntdb"
 )
 
 var (
-	ErrFileExist = errors.New("File Is Exist")
+	ErrFileExist    = errors.New("File Is Exist")
+	ErrNotFoundFile = errors.New("Not Found File")
 )
 
 type Master struct {
@@ -21,6 +22,7 @@ type Master struct {
 	leases         map[ChunkHandle]*Lease     // 租约信息
 	kvStore        *buntdb.DB                 // SamKv 持久化
 	codec          Codec
+	mu             sync.RWMutex
 }
 type FileMeta struct {
 	Path      string
@@ -40,7 +42,7 @@ type Lease struct {
 	Secondaries []string
 }
 
-func NewMaster(path string, opt store.Options) (*Master, error) {
+func NewMaster(path string) (*Master, error) {
 	st, err := buntdb.Open(path)
 	if err != nil {
 		return nil, err
@@ -93,6 +95,9 @@ func (ms *Master) CreateFile(req CreateFileRequest, rep *CreateFileReply) error 
 			if err != nil {
 				return err
 			}
+			ms.mu.Lock()
+			defer ms.mu.Unlock()
+			ms.namespace[req.Path]=fm
 			return nil
 		}
 		return err
@@ -106,25 +111,21 @@ func (ms *Master) DeleteFile(req DeleteFileRequest, rep *DeleteFileReply) error 
 		return err
 	})
 	if err == nil {
+		ms.mu.Lock()
+		defer ms.mu.Unlock()
 		delete(ms.namespace, req.Path)
 	}
 	return err
 }
 func (ms *Master) GetFileInfo(req GetFileInfoRequest, rep *GetFileInfoReply) error {
-	return ms.kvStore.View(func(tx *buntdb.Tx) error {
-		val, err := tx.Get(req.Path)
-		if err != nil {
-			return err
-		}
-		fm := &FileMeta{}
-		err = ms.codec.Decode(val, fm)
-		if err != nil {
-			return err
-		}
-		rep.Info = *fm
-		return nil
-
-	})
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+	val, ok := ms.namespace[req.Path]
+	if !ok {
+		return ErrNotFoundFile
+	}
+	rep.Info = *val
+	return nil
 }
 func (ms *Master) Run(host string) {
 	lis, err := net.Listen("tcp", host)
