@@ -73,7 +73,7 @@ func (ms *Master) ReLoad() error {
 	})
 
 }
-func (ms *Master) CreateFile(req CreateFileRequest, rep CreateFileReply) error {
+func (ms *Master) CreateFile(req CreateFileRequest, rep *CreateFileReply) error {
 	fm := &FileMeta{
 		Path:      req.Path,
 		Size:      0,
@@ -98,6 +98,33 @@ func (ms *Master) CreateFile(req CreateFileRequest, rep CreateFileReply) error {
 		return err
 	})
 
+}
+
+func (ms *Master) DeleteFile(req DeleteFileRequest, rep *DeleteFileReply) error {
+	err := ms.kvStore.Update(func(tx *buntdb.Tx) error {
+		_, err := tx.Delete(req.Path)
+		return err
+	})
+	if err == nil {
+		delete(ms.namespace, req.Path)
+	}
+	return err
+}
+func (ms *Master) GetFileInfo(req GetFileInfoRequest, rep *GetFileInfoReply) error {
+	return ms.kvStore.View(func(tx *buntdb.Tx) error {
+		val, err := tx.Get(req.Path)
+		if err != nil {
+			return err
+		}
+		fm := &FileMeta{}
+		err = ms.codec.Decode(val, fm)
+		if err != nil {
+			return err
+		}
+		rep.Info = *fm
+		return nil
+
+	})
 }
 func (ms *Master) Run(host string) {
 	lis, err := net.Listen("tcp", host)

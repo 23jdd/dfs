@@ -1,5 +1,9 @@
 package dfs
 
-type CreateFileReply struct{
-	   
+type CreateFileReply struct {
+}
+type DeleteFileReply struct {
+}
+type GetFileInfoReply struct{
+	  Info FileMeta   
 }

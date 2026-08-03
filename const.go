@@ -1,9 +1,11 @@
 package dfs
 
-const(
-	MasterSerivceName="Master"
-    ChunkServiceName="Chunk"
+const (
+	MasterSerivceName = "Master"
+	ChunkServiceName  = "Chunk"
 )
-const(
-	  
+const (
+	CreateFile  = "CreateFile"
+	DeleteFile  = "DeletFile"
+	GetFileInfo = "GetFileInfo"
 )
