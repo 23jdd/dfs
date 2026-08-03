@@ -1,6 +1,7 @@
 package dfs
 
 import (
+	"encoding/json"
 	"net"
 	"time"
 
@@ -39,14 +40,34 @@ func NewMaster(dir string, opt store.Options) (*Master, error) {
 		return nil, err
 	}
 	ms := &Master{}
+	ms.namespace = make(map[string]*FileMeta)
 	ms.kvStore = st
+	err = ms.ReLoad()
+	if err != nil {
+		return nil, err
+	}
 	ms.leases = make(map[ChunkHandle]*Lease)
 	ms.chunkIndex = make(map[ChunkHandle]*ChunkMeta)
 	ms.chunkLocations = make(map[ChunkHandle][]string)
-	ms.namespace = make(map[string]*FileMeta)
 	return ms, nil
 }
+func (ms *Master) ReLoad() error {
+	// get all keys
+	records, err := ms.kvStore.Scan("", "\xff")
+	if err != nil {
+		return err
+	}
+	for _, v := range records {
+		fm := &FileMeta{}
+		err = json.Unmarshal([]byte(v.Val), fm)
+		if err != nil {
+			return err
+		}
+		ms.namespace[v.Key] = fm
+	}
+	return nil
 
+}
 func (ms *Master) Run(host string) {
 	lis, err := net.Listen("tcp", host)
 	if err != nil {
