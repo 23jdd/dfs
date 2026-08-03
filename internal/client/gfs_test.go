@@ -92,6 +92,18 @@ func (tc *testCluster) killServer(i int) {
 	tc.servers[i].Stop()
 }
 
+// killServerByAddr 按地址停止 ChunkServer(模拟主副本所在服务器故障)。
+func (tc *testCluster) killServerByAddr(addr string) {
+	tc.t.Helper()
+	for i, cs := range tc.servers {
+		if cs.Addr() == addr {
+			tc.killServer(i)
+			return
+		}
+	}
+	tc.t.Fatalf("chunkserver %s not found", addr)
+}
+
 // restartMaster 重启 Master(复用同一数据目录与地址,验证 checkpoint + 心跳重建)。
 func (tc *testCluster) restartMaster() {
 	tc.t.Helper()
