@@ -1,4 +1,4 @@
-# GFS — 简化版 Google File System(Go 实现)
+# dfs
 
 一个可运行的 GFS 原型,包含 **Master / ChunkServer / Client** 三个角色,支持文件创建、读写、原子追加、快照(写时复制)、垃圾回收、故障恢复等核心机制。
 
@@ -158,11 +158,3 @@ data, _ := c.ReadFile("/hello.txt")     // 读整文件
 c.Snapshot("/hello.txt", "/hello.snap") // 快照
 c.Delete("/hello.txt")                  // 惰性删除
 ```
-
-## 实现说明与已知简化
-
-- 单 Master(无主备切换),租约与元数据重建聚焦单点恢复;
-- `mrpc` 的 `Call` 非并发安全,`internal/rpc` 用互斥锁串行化,并提供 `Go` 异步调用;
-- 副本再复制期间对同一 chunk 的写入与复制存在理论上的读撕裂窗口(原型简化);
-- 追加记录必须小于一个 chunk;`MaxRPCDataSize` 受 mrpc 10MB 单帧上限约束;
-- Windows 平台注意事项:`op.log` 不能以 `O_APPEND` 打开(Truncate 权限不足),实现中采用 seek-to-end 写入。
