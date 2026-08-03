@@ -10,13 +10,13 @@ import (
 // 使用独立 Codec 实例，客户端单连接复用同一实例）。
 type Codec interface {
 	Encode(v any) (string, error)
-	Decode(string, v any) error
+	Decode(data string, v any) error
 }
 
-// MsgCodec 是基于 json 的 Codec 实现。
+// JsonCodec 是基于 json 的 Codec 实现。
 type JsonCodec struct{}
 
-// NewMsgCodec 创建一个新的 MsgCodec 实例。
+// NewMsgCodec 创建一个新的 JsonCodec 实例。
 func NewJsonCodec() *JsonCodec {
 	return &JsonCodec{}
 }

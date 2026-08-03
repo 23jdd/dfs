@@ -1,12 +1,17 @@
 package dfs
 
 import (
-	"encoding/json"
+	"errors"
 	"net"
 	"time"
 
 	"github.com/23jdd/SamKv/pkg/store"
 	"github.com/23jdd/mrpc"
+	"github.com/tidwall/buntdb"
+)
+
+var (
+	ErrFileExist = errors.New("File Is Exist")
 )
 
 type Master struct {
@@ -14,7 +19,8 @@ type Master struct {
 	chunkIndex     map[ChunkHandle]*ChunkMeta // Chunk ID -> 元数据
 	chunkLocations map[ChunkHandle][]string   // Chunk ID -> ChunkServer 地址（内存重建）
 	leases         map[ChunkHandle]*Lease     // 租约信息
-	kvStore        *store.StoreManager        // SamKv 持久化
+	kvStore        *buntdb.DB                 // SamKv 持久化
+	codec          Codec
 }
 type FileMeta struct {
 	Path      string
@@ -34,8 +40,8 @@ type Lease struct {
 	Secondaries []string
 }
 
-func NewMaster(dir string, opt store.Options) (*Master, error) {
-	st, err := store.NewStoreMangerWithOptions(dir, opt)
+func NewMaster(path string, opt store.Options) (*Master, error) {
+	st, err := buntdb.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -49,23 +55,48 @@ func NewMaster(dir string, opt store.Options) (*Master, error) {
 	ms.leases = make(map[ChunkHandle]*Lease)
 	ms.chunkIndex = make(map[ChunkHandle]*ChunkMeta)
 	ms.chunkLocations = make(map[ChunkHandle][]string)
+	ms.codec = NewJsonCodec()
 	return ms, nil
 }
 func (ms *Master) ReLoad() error {
 	// get all keys
-	records, err := ms.kvStore.Scan("", "\xff")
-	if err != nil {
-		return err
+	return ms.kvStore.View(func(tx *buntdb.Tx) error {
+		return tx.AscendKeys("*", func(key, value string) bool {
+			fm := &FileMeta{}
+			err := ms.codec.Decode(value, fm)
+			if err != nil {
+				return true
+			}
+			ms.namespace[key] = fm
+			return true
+		})
+	})
+
+}
+func (ms *Master) CreateFile(req CreateFileRequest, rep CreateFileReply) error {
+	fm := &FileMeta{
+		Path:      req.Path,
+		Size:      0,
+		CreatedAt: time.Now().UTC(),
 	}
-	for _, v := range records {
-		fm := &FileMeta{}
-		err = json.Unmarshal([]byte(v.Val), fm)
-		if err != nil {
-			return err
+	return ms.kvStore.Update(func(tx *buntdb.Tx) error {
+		_, err := tx.Get(req.Path)
+		if err == nil {
+			return ErrFileExist
 		}
-		ms.namespace[v.Key] = fm
-	}
-	return nil
+		if errors.Is(err, buntdb.ErrNotFound) {
+			val, err := ms.codec.Encode(fm)
+			if err != nil {
+				return err
+			}
+			_, _, err = tx.Set(req.Path, val, &buntdb.SetOptions{})
+			if err != nil {
+				return err
+			}
+			return nil
+		}
+		return err
+	})
 
 }
 func (ms *Master) Run(host string) {
