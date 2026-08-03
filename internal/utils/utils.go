@@ -50,12 +50,12 @@ func NormalizePath(p string) (string, error) {
 	return clean, nil
 }
 
-// SplitPath 将路径拆分为各层组件,如 "/a/b" -> ["/", "/a", "/a/b"]。
+// SplitPath 将路径拆分为各层组件(含根路径),如 "/a/b" -> ["/", "/a", "/a/b"]。
 func SplitPath(p string) []string {
+	parts := []string{"/"}
 	if p == "/" {
-		return []string{"/"}
+		return parts
 	}
-	var parts []string
 	cur := ""
 	for _, seg := range strings.Split(p, "/") {
 		if seg == "" {
@@ -69,11 +69,11 @@ func SplitPath(p string) []string {
 
 // BaseName 返回路径的最后一段,如 "/a/b" -> "b"。
 func BaseName(p string) string {
-	parts := SplitPath(p)
-	if len(parts) == 0 {
-		return ""
+	last := SplitPath(p)[len(SplitPath(p))-1]
+	if i := strings.LastIndex(last, "/"); i >= 0 {
+		return last[i+1:]
 	}
-	return strings.TrimPrefix(parts[len(parts)-1], "/")
+	return last
 }
 
 // IsDeletedPath 判断路径是否位于垃圾回收隐藏目录下。
