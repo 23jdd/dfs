@@ -27,9 +27,10 @@ type GFSClient struct {
 	master   *rpc.Client
 	masterMu sync.Mutex
 
-	// 服务器连接池
-	servers   map[string]*rpc.Client
-	serversMu sync.Mutex
+	// 服务器连接池:addr -> 连接;同一 addr 的调用由 serverLocks[addr] 串行化
+	servers     map[string]*rpc.Client
+	serverLocks map[string]*sync.Mutex
+	serversMu   sync.Mutex
 
 	// chunk 位置缓存:handle -> 位置信息(带 TTL)
 	locationCache map[types.ChunkHandle]*CachedLocation
@@ -59,6 +60,7 @@ func New(masterAddr string, cfg *types.Config) *GFSClient {
 		cfg:           cfg,
 		clientID:      rand.Uint32(),
 		servers:       make(map[string]*rpc.Client),
+		serverLocks:   make(map[string]*sync.Mutex),
 		locationCache: make(map[types.ChunkHandle]*CachedLocation),
 	}
 }
@@ -82,67 +84,79 @@ func (c *GFSClient) Close() {
 
 // ---- 通信辅助 ----
 
-// masterClient 获取 Master 连接(懒连接,失败自动重连)。
-func (c *GFSClient) masterClient() (*rpc.Client, error) {
+// callMaster 调用 Master 服务。
+// 整个调用在 masterMu 临界区内执行:mrpc 客户端单连接非并发安全,
+// 且服务端在错误响应后会关闭连接,持有锁可避免并发调用互相踩踏连接。
+// 业务错误(哨兵)丢弃连接后直接返回;连接类错误重试一次。
+func (c *GFSClient) callMaster(method string, args, reply any) error {
 	c.masterMu.Lock()
 	defer c.masterMu.Unlock()
-	if c.master != nil {
-		return c.master, nil
-	}
-	cl, err := rpc.Dial(c.masterAddr)
-	if err != nil {
-		return nil, err
-	}
-	c.master = cl
-	return cl, nil
-}
-
-// callMaster 调用 Master 服务;失败时清理连接以便下次重连,
-// 并还原跨 RPC 的哨兵错误(见 types.MatchError)。
-func (c *GFSClient) callMaster(method string, args, reply any) error {
-	cl, err := c.masterClient()
-	if err != nil {
-		return err
-	}
-	err = cl.Call(rpc.ServiceMethod(types.MasterService, method), args, reply)
-	if err != nil {
-		c.masterMu.Lock()
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if c.master == nil {
+			cl, err := rpc.Dial(c.masterAddr)
+			if err != nil {
+				return err
+			}
+			c.master = cl
+		}
+		cl := c.master
+		err := cl.Call(rpc.ServiceMethod(types.MasterService, method), args, reply)
+		if err == nil {
+			return nil
+		}
+		matched := types.MatchError(err)
+		// 错误响应后服务端已关闭连接,丢弃池中连接
 		_ = cl.Close()
 		c.master = nil
-		c.masterMu.Unlock()
+		if matched != err {
+			return matched // 业务错误:错误信息有效,直接返回
+		}
+		lastErr = err
 	}
-	return types.MatchError(err)
+	return types.MatchError(lastErr)
 }
 
-// serverClient 获取 ChunkServer 连接(带缓存)。
-func (c *GFSClient) serverClient(addr string) (*rpc.Client, error) {
-	c.serversMu.Lock()
-	defer c.serversMu.Unlock()
-	if cl := c.servers[addr]; cl != nil {
-		return cl, nil
-	}
-	cl, err := rpc.Dial(addr)
-	if err != nil {
-		return nil, err
-	}
-	c.servers[addr] = cl
-	return cl, nil
-}
-
-// callServer 调用 ChunkServer 服务;失败时关闭缓存连接,并还原哨兵错误。
+// callServer 调用 ChunkServer 服务。
+// 对同一服务器的调用在 per-addr 锁内串行执行:mrpc 客户端单连接非并发安全,
+// 且服务端在错误响应后会关闭连接,持有锁可避免并发调用互相踩踏连接。
+// 业务错误(哨兵)丢弃连接后直接返回;连接类错误重试一次。
 func (c *GFSClient) callServer(addr, method string, args, reply any) error {
-	cl, err := c.serverClient(addr)
-	if err != nil {
-		return err
+	c.serversMu.Lock()
+	lk := c.serverLocks[addr]
+	if lk == nil {
+		lk = &sync.Mutex{}
+		c.serverLocks[addr] = lk
 	}
-	err = cl.Call(rpc.ServiceMethod(types.ChunkServerService, method), args, reply)
-	if err != nil {
-		c.serversMu.Lock()
+	c.serversMu.Unlock()
+
+	lk.Lock()
+	defer lk.Unlock()
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		cl := c.servers[addr]
+		if cl == nil {
+			d, err := rpc.Dial(addr)
+			if err != nil {
+				return err
+			}
+			cl = d
+			c.servers[addr] = cl
+		}
+		err := cl.Call(rpc.ServiceMethod(types.ChunkServerService, method), args, reply)
+		if err == nil {
+			return nil
+		}
+		matched := types.MatchError(err)
+		// 错误响应后服务端已关闭连接,丢弃池中连接
 		_ = cl.Close()
 		delete(c.servers, addr)
-		c.serversMu.Unlock()
+		if matched != err {
+			return matched // 业务错误:错误信息有效,直接返回
+		}
+		lastErr = err
 	}
-	return types.MatchError(err)
+	return types.MatchError(lastErr)
 }
 
 // nextDataID 生成全局唯一的数据推送 ID(客户端实例 ID + 自增序号)。
